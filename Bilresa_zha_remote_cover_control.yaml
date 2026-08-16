@@ -1,0 +1,56 @@
+blueprint:
+  name: ZHA Remote Cover Control
+  description: >
+    Control a cover with a ZHA remote. Long press up opens, long press down
+    closes (triggered on button release), any short press stops the cover.
+  domain: automation
+  input:
+    remote:
+      name: Remote
+      description: The ZHA remote device
+      selector:
+        device:
+          integration: zha
+    cover:
+      name: Cover
+      description: The cover to control
+      selector:
+        entity:
+          domain: cover
+
+triggers:
+  - trigger: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
+
+actions:
+  - variables:
+      command: "{{ trigger.event.data.command }}"
+  - choose:
+      # Long press up (fires on release) → open
+      - conditions:
+          - condition: template
+            value_template: "{{ command == 'move_up_release' }}"
+        sequence:
+          - action: cover.open_cover
+            target:
+              entity_id: !input cover
+      # Long press down (fires on release) → close
+      - conditions:
+          - condition: template
+            value_template: "{{ command == 'move_down_release' }}"
+        sequence:
+          - action: cover.close_cover
+            target:
+              entity_id: !input cover
+      # Any short press → stop
+      - conditions:
+          - condition: template
+            value_template: "{{ command in ['on', 'off'] }}"
+        sequence:
+          - action: cover.stop_cover
+            target:
+              entity_id: !input cover
+
+mode: restart
