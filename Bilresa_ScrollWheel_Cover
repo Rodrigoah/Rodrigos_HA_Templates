@@ -1,0 +1,126 @@
+blueprint:
+  name: IKEA BILRESA Scroll Wheel -> Cover (ZHA)
+  description: >
+    Control a cover with an IKEA BILRESA scroll wheel remote (model 09BA / E2490)
+    paired over Zigbee with ZHA.
+
+      * Wheel turned one way  -> open the cover
+      * Wheel turned the other way -> close the cover
+      * Button pressed (on/off)    -> stop the cover
+
+    WHY A HELPER IS NEEDED: over Zigbee this remote reports an ABSOLUTE level
+    (0-254) as you turn the wheel - it never reports a direction. To work out
+    the direction the blueprint compares the new level with the previous one, so
+    it needs one input_number helper per remote to remember the last position.
+    Create it under Settings > Devices & Services > Helpers > Number
+    (min 0, max 255, step 1) and select it below.
+
+    If open/close come out reversed for your remote, just flip the
+    "Invert direction" switch.
+  domain: automation
+  input:
+    remote_device:
+      name: BILRESA remote
+      description: Select your BILRESA scroll wheel from the ZHA device list.
+      selector:
+        device:
+          filter:
+            - integration: zha
+              manufacturer: IKEA of Sweden
+              model: "09BA"
+    target_cover:
+      name: Cover to control
+      description: The cover the wheel opens/closes and the button stops.
+      selector:
+        target:
+          entity:
+            domain: cover
+    last_level_helper:
+      name: "Helper: last wheel level (input_number)"
+      description: >
+        The input_number helper used to remember the wheel's last position.
+        Use a SEPARATE helper for each remote.
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+    invert_direction:
+      name: Invert direction
+      description: Turn on if the wheel opens when you expect it to close.
+      default: false
+      selector:
+        boolean: {}
+    min_step:
+      name: Minimum step (deadband)
+      description: >
+        Ignore wheel movements smaller than this many level units. Raise it so a
+        small accidental turn doesn't send the cover to its end stop.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 50
+          mode: slider
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+variables:
+  last_level_helper: !input last_level_helper
+  min_step: !input min_step
+  invert: !input invert_direction
+
+triggers:
+  # Scroll wheel -> Level Control cluster (8)
+  - trigger: event
+    id: scroll
+    event_type: zha_event
+    event_data:
+      device_id: !input remote_device
+      cluster_id: 8
+  # Button -> On/Off cluster (6)
+  - trigger: event
+    id: button
+    event_type: zha_event
+    event_data:
+      device_id: !input remote_device
+      cluster_id: 6
+
+actions:
+  - choose:
+      # ===== SCROLL WHEEL =====
+      - conditions:
+          - "{{ trigger.id == 'scroll' }}"
+          - "{{ trigger.event.data.command in ['move_to_level', 'move_to_level_with_on_off'] }}"
+        sequence:
+          - variables:
+              level: "{{ trigger.event.data.args[0] | int(0) }}"
+              previous: "{{ states(last_level_helper) | int(0) }}"
+              steps: "{{ (level - previous) | abs }}"
+              direction: "{{ 'up' if level > previous else 'down' }}"
+          # remember the new position for next time
+          - action: input_number.set_value
+            target:
+              entity_id: !input last_level_helper
+            data:
+              value: "{{ level }}"
+          # ignore tiny / no-change events
+          - condition: template
+            value_template: "{{ steps >= (min_step | int) }}"
+          # open or close, honouring the invert switch
+          - if: "{{ (direction == 'up') != invert }}"
+            then:
+              - action: cover.open_cover
+                target: !input target_cover
+            else:
+              - action: cover.close_cover
+                target: !input target_cover
+
+      # ===== BUTTON (on/off) -> stop =====
+      - conditions:
+          - "{{ trigger.id == 'button' }}"
+          - "{{ trigger.event.data.command in ['on', 'off', 'toggle'] }}"
+        sequence:
+          - action: cover.stop_cover
+            target: !input target_cover
